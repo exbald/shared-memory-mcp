@@ -1,0 +1,20 @@
+{
+  "name": "shared-memory-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for shared cross-agent memory via Supabase",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@supabase/supabase-js": "^2.104.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^5.9.3",
+    "vercel": "^52.0.0"
+  }
+}
