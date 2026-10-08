@@ -7,13 +7,19 @@ const EMBEDDING_API_KEY = process.env.EMBEDDING_API_KEY || "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// The same model either way, so stored vectors stay comparable: OpenRouter keys
+// ("sk-or-…") go through OpenRouter, any other key is sent to OpenAI directly.
+const EMBEDDING_ENDPOINT = EMBEDDING_API_KEY.startsWith("sk-or-")
+  ? { url: "https://openrouter.ai/api/v1/embeddings", model: "openai/text-embedding-3-small" }
+  : { url: "https://api.openai.com/v1/embeddings", model: "text-embedding-3-small" };
+
 async function getEmbedding(text: string): Promise<number[] | null> {
   if (!EMBEDDING_API_KEY) return null;
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
+    const res = await fetch(EMBEDDING_ENDPOINT.url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${EMBEDDING_API_KEY}` },
-      body: JSON.stringify({ model: "openai/text-embedding-3-small", input: text }),
+      body: JSON.stringify({ model: EMBEDDING_ENDPOINT.model, input: text }),
     });
     if (!res.ok) return null;
     const data = await res.json();
