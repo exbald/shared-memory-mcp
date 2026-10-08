@@ -61,7 +61,7 @@ Copy `.env.example` to `.env` and fill in:
 | `SUPABASE_URL` | Supabase project URL | Yes |
 | `SUPABASE_ANON_KEY` | Supabase anon (public) key | Yes |
 | `MCP_API_KEY` | Shared secret to gate the `/mcp` endpoint. Clients pass it via `?key=...`, `X-API-Key:`, or `Authorization: Bearer ...`. If unset, the endpoint is unauthenticated. | No |
-| `EMBEDDING_API_KEY` | OpenRouter API key. Enables hybrid vector + keyword search via `openai/text-embedding-3-small`. | No |
+| `EMBEDDING_API_KEY` | OpenRouter (`sk-or-…`) or OpenAI API key. Enables hybrid vector + keyword search via `text-embedding-3-small`. | No |
 
 ### Auth & threat model
 
