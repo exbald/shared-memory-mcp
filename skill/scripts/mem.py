@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import urllib.request
@@ -222,26 +223,68 @@ def save_state(session_id, state):
 
 # ---------- transcript scan (stop hook) ----------
 
-TOOL_NAME_KEYS = ("name", "tool_name", "toolName")
+TOOL_CALL_TYPES = ("tool_use", "function_call", "custom_tool_call")
+SAVE_CALL = re.compile(r"mem_(add|update)")
+
+
+def _tool_calls_in(node):
+    """(name, input) for each tool call in a parsed transcript line, at any depth. Inputs are
+    not searched: they are arguments, and may well contain text that looks like a transcript."""
+    if isinstance(node, dict):
+        if node.get("type") in TOOL_CALL_TYPES and isinstance(node.get("name"), str):
+            yield node["name"], node.get("input", node.get("arguments"))
+            return
+        for value in node.values():
+            yield from _tool_calls_in(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _tool_calls_in(value)
+
+
+def _commands(tool_input):
+    """Shell commands in a tool call's input: Claude's {"command": "..."}, or Codex's arguments
+    JSON with "command": [argv...] or "cmd". File contents and patches are not commands."""
+    if isinstance(tool_input, str):
+        try:
+            tool_input = json.loads(tool_input)
+        except ValueError:
+            return []
+    command = tool_input.get("command", tool_input.get("cmd")) if isinstance(tool_input, dict) else None
+    if isinstance(command, str):
+        return [command]
+    if isinstance(command, list):
+        return [c for c in command if isinstance(c, str)]
+    return []
+
+
+def _runs_mem_save(command):
+    """True when a shell command runs `mem.py add|update`; quoting it (`rg 'mem.py add'`) is not."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:  # unbalanced quotes
+        return False
+    return any(w.endswith("mem.py") and nxt in ("add", "update") for w, nxt in zip(words, words[1:]))
 
 
 def tool_calls(transcript_path):
-    """Ordered list of tool names called in a JSONL transcript (Claude/Codex style)."""
+    """Ordered tool names called in a JSONL transcript (Claude/Codex style). A shell call that
+    runs `mem.py add|update` is reported as "mem_add (via mem.py)", since it saves too."""
     names = []
     try:
         with open(transcript_path) as f:
             for line in f:
-                found = re.findall(r'"type"\s*:\s*"(?:tool_use|function_call|custom_tool_call)"[^{}]*?"name"\s*:\s*"([^"]+)"', line)
-                # A shell call running `mem.py add|update` is a save too.
-                if found and re.search(r"mem\.py\\?\"?\s+(?:add|update)\b", line):
-                    found[-1] = "mem_add (via mem.py)"
-                names.extend(found)
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                for name, tool_input in _tool_calls_in(entry):
+                    saved = any(_runs_mem_save(c) for c in _commands(tool_input))
+                    names.append("mem_add (via mem.py)" if saved else name)
     except OSError:
         return []
     return names
-
-
-SAVE_CALL = re.compile(r"mem_(add|update)")
 
 
 # ---------- hook output formats ----------
@@ -335,14 +378,18 @@ def hook(event, tool, once=False, cached=False):
                          "\n".join(f"- {clip(l, 300)}" for _, l in new))
 
     elif event == "stop":
-        # One nudge per session at most ("nudged_at" marks a session nudged by an older version).
-        if data.get("stop_hook_active") or state.get("nudged") or "nudged_at" in state:
+        # One nudge per session at most, and none once the session has saved; both are remembered,
+        # so later stops skip the transcript ("nudged_at" marks a session nudged by an older version).
+        if data.get("stop_hook_active") or state.get("nudged") or state.get("saved") or "nudged_at" in state:
             return
         path = data.get("transcript_path") or data.get("transcriptPath")
         if not path:
             return
         names = tool_calls(path)
-        if len(names) >= STOP_NUDGE_AFTER and not any(SAVE_CALL.search(n) for n in names):
+        if any(SAVE_CALL.search(n) for n in names):
+            state["saved"] = True
+            save_state(session_id, state)
+        elif len(names) >= STOP_NUDGE_AFTER:
             state["nudged"] = True
             save_state(session_id, state)
             emit_stop_block(tool, STOP_REASON)
