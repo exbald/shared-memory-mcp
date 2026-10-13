@@ -27,8 +27,9 @@ RULES = (
     "Shared memory (cross-agent MCP `shared-memory`): search it (mem_search) before "
     "answering about any project, person, or past decision; save durable decisions, "
     "preferences, project status changes, and costly-to-rediscover facts with mem_add "
-    "(category + project-slug tag + agent name); mem_search first and mem_update instead "
-    "of duplicating; never save secrets. Before ending a session that moved a project "
+    "(category + project-slug tag + agent name); mem_search first, then store, skip what is "
+    "already saved, or mem_update/merge instead of duplicating; never save secrets. "
+    "Before ending a session that moved a project "
     "forward, save or update one project status summary. Full rules: shared-memory-mcp skill."
 )
 
@@ -108,8 +109,8 @@ def call(tool, args):
     with resp:
         raw = resp.read().decode()
     payload = raw
-    if "data:" in raw:  # SSE framing
-        payload = "\n".join(l[5:].strip() for l in raw.splitlines() if l.startswith("data:"))
+    if "data:" in raw:  # SSE framing; split on "\n" only (splitlines also breaks on U+2028 & co.)
+        payload = "\n".join(l[5:].strip() for l in raw.split("\n") if l.startswith("data:"))
     msg = json.loads(payload)
     if "error" in msg:
         raise RuntimeError(msg["error"].get("message", str(msg["error"])))
@@ -126,9 +127,11 @@ MEM_LINE = re.compile(r"^\[([0-9a-f-]{36})\]\s")
 
 
 def split_memories(text):
-    """Split tool output into (id, line) pairs; one memory per '[uuid] ...' line."""
+    """Split tool output into (id, line) pairs; one memory per '[uuid] ...' line.
+
+    Only "\\n" ends a line: content holding U+001E or U+2028 must not pose as a second memory."""
     out = []
-    for line in text.splitlines():
+    for line in (l.rstrip("\r") for l in text.split("\n")):
         m = MEM_LINE.match(line)
         if m:
             out.append((m.group(1), line))

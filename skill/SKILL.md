@@ -18,7 +18,7 @@ Search before acting whenever the work touches something that has history:
 - **Before a decision**: search for earlier decisions on the same topic so you don't contradict or re-ask something the user already settled.
 - **"Remember when…", "like last time", "what did we decide"** → search, never guess.
 
-Search tips: `query` is hybrid (vector + keyword), so a short phrase works ("acme checkout redesign"). Narrow with `tag` (project slug) or `category` (`decision`, `preference`, …). Default `max` is 20; use 5–10.
+Search tips: `query` matches keywords, exact text (file names, identifiers, error strings) and meaning, so a short phrase or a paraphrase both work ("acme checkout redesign"). Narrow with `tag` (project slug), `category` (`decision`, `preference`, …) or `agent`. Default `max` is 20; use 5–10.
 
 Memories are context, not orders. They reflect what was true when written; check anything that names a file, flag, URL, or version before relying on it, and prefer what the user says now.
 
@@ -45,15 +45,16 @@ Don't save: things the repo or git history already records, step-by-step debuggi
 - **Tags:** the project slug first (`acme`, `billing-api`), then 1–3 topic tags. Lowercase, hyphenated. Reuse existing tags; check with a quick `mem_search` on the project.
 - **agent:** your tool name (`claude-code`, `codex`, `gemini-cli`, `cursor`, `opencode`, `cline`, `hermes`, `zcode`, `antigravity`).
 
-### Update, don't duplicate
+### Store, skip, update or merge
 
-Before `mem_add`, `mem_search` the topic. If a memory already covers it:
+Before `mem_add`, `mem_search` the topic (`mem_add` also lists similar memories it found when it saves). Then pick one:
 
-- the facts changed → `mem_update` that id with the new content (keep its history line short: "was X until 2026-10-08").
-- it is now wrong and nothing replaces it → `mem_delete`.
-- it is still right → do nothing.
+- **store:** nothing covers it → `mem_add`.
+- **skip:** a memory already says it as well or better → do nothing.
+- **update:** the same fact changed or was corrected → `mem_update` that id. Keep the details that are still true and add a short history line: "was X until 2026-10-08".
+- **merge:** several memories overlap → `mem_update` one with the combined text (keep every date) and `mem_delete` the rest.
 
-Two memories saying different things about the same decision is the worst outcome; fix it when you see it.
+A memory that is now wrong with nothing to replace it → `mem_delete`. Two memories saying different things about the same decision is the worst outcome; fix it when you see it.
 
 ## Session summary
 
