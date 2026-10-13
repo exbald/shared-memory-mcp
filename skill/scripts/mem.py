@@ -315,8 +315,20 @@ def save_state(session_id, state):
 
 TOOL_CALL_TYPES = ("tool_use", "function_call", "custom_tool_call")
 TOOL_RESULT_TYPES = ("tool_result", "function_call_output", "custom_tool_call_output")
+SAVE_TOOL = re.compile(r"mem_(add|update)")
+CLI_WRITE = re.compile(r"mem\.(?:py|sh)[\\'\"]*\s+(?:add|update)\b")  # not search, get, list, stats
 # The server's reply to a save, whichever client made it: an MCP tool, mem.py or mem.sh.
 SAVE_CONFIRMED = re.compile(r"Saved \[[a-z]+\] \(id: [0-9a-f-]{36}\)|Updated \[[0-9a-f-]{36}\]")
+
+
+def _as_text(value):
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def _is_memory_write(call):
+    """An MCP save tool, or a call whose input runs `mem.py add|update` or `mem.sh add|update`."""
+    tool_input = _as_text(call.get("input", call.get("arguments")))
+    return bool(SAVE_TOOL.search(call.get("name", ""))) or bool(CLI_WRITE.search(tool_input))
 
 
 def _typed_nodes(node):
@@ -335,10 +347,11 @@ def _typed_nodes(node):
 
 
 def scan_transcript(transcript_path):
-    """(tool calls, saved) for a JSONL transcript (Claude Code or Codex). saved means a tool
-    result holds the server's save confirmation, so a command that only mentions mem.py add,
-    never ran, or failed is not a save."""
-    calls, saved = 0, False
+    """(tool calls, saved) for a JSONL transcript (Claude Code or Codex). saved means a memory
+    write got the server's confirmation as its own result (matched by tool_use_id or call_id).
+    A command that mentions mem.py add, never ran or failed is not a save, and neither is
+    confirmation text in the result of any other call (a log being read, a memory quoting one)."""
+    calls, saved, writes = 0, False, set()
     try:
         with open(transcript_path) as f:
             for line in f:
@@ -349,8 +362,13 @@ def scan_transcript(transcript_path):
                 for node in _typed_nodes(entry):
                     if node["type"] in TOOL_CALL_TYPES:
                         calls += 1
+                        call_id = node.get("id") or node.get("call_id")
+                        if call_id and _is_memory_write(node):
+                            writes.add(call_id)
                     elif node["type"] in TOOL_RESULT_TYPES and not saved:
-                        saved = bool(SAVE_CONFIRMED.search(json.dumps(node.get("content", node.get("output")))))
+                        call_id = node.get("tool_use_id") or node.get("call_id")
+                        if call_id in writes and SAVE_CONFIRMED.search(_as_text(node.get("content", node.get("output")))):
+                            saved = True
     except OSError:
         return 0, False
     return calls, saved

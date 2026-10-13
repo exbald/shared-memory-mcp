@@ -1,13 +1,15 @@
 """The stop hook: one nudge per session, and only for a session that has saved nothing.
 
-A save counts only when a tool result holds the server's confirmation ("Saved [cat] (id: ...)" or
-"Updated [id]"), however it was made. A command that mentions mem.py add, never ran, or failed is
-not a save.
+A save counts only when a memory write (an MCP save tool, or a shell call running mem.py or mem.sh)
+gets the server's confirmation ("Saved [cat] (id: ...)" or "Updated [id]") as its own result. A
+command that mentions mem.py add, never ran or failed is not a save, nor is confirmation-shaped text
+in the result of any other call.
 
 Run: python3 -m unittest discover -s tests
 """
 import contextlib
 import io
+import itertools
 import json
 import os
 import sys
@@ -22,31 +24,39 @@ import mem  # noqa: E402
 ID = "3a131e42-1489-4208-9ef4-5aeb4a1eaf5e"
 SAVED = f"Saved [decision] (id: {ID})\nChose Postgres\ntags: db\n[embedded]"
 UPDATED = f"Updated [{ID}]\nChose Postgres\ntags: db"
+_ids = itertools.count(1)
 
 
-def tool_use(name, **tool_input):
+def tool_use(name, call_id="toolu_0", **tool_input):
     """An assistant line of a Claude Code transcript calling one tool."""
     return json.dumps({"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "id": "toolu_1", "name": name, "input": tool_input}]}})
+        {"type": "tool_use", "id": call_id, "name": name, "input": tool_input}]}})
 
 
-def tool_result(text, as_list=False):
+def tool_result(call_id, text, as_list=False):
     """The user line carrying a tool's result; MCP tools give a list of text parts, Bash a string."""
     content = [{"type": "text", "text": text}] if as_list else text
     return json.dumps({"type": "user", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "toolu_1", "content": content}]}})
+        {"type": "tool_result", "tool_use_id": call_id, "content": content}]}})
+
+
+def claude_call(name, result, as_list=False, **tool_input):
+    """A Claude Code tool call and its result, linked by id."""
+    call_id = f"toolu_{next(_ids)}"
+    return [tool_use(name, call_id, **tool_input), tool_result(call_id, result, as_list)]
 
 
 def codex_call(script, output):
-    """A Codex shell call and its output, as two rollout lines."""
-    call = {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": "c1",
+    """A Codex shell call and its output, as two rollout lines linked by call_id."""
+    call_id = f"call_{next(_ids)}"
+    call = {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": call_id,
                                                  "arguments": json.dumps({"command": ["bash", "-lc", script]})}}
-    out = {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
+    out = {"type": "response_item", "payload": {"type": "function_call_output", "call_id": call_id,
                                                 "output": json.dumps({"output": output, "metadata": {"exit_code": 0}})}}
     return [json.dumps(call), json.dumps(out)]
 
 
-WORK = [tool_use("Read", file_path="a"), tool_result("file text")] * 12
+WORK = claude_call("Read", "file text", file_path="a") * 12
 
 
 class StopHook(unittest.TestCase):
@@ -85,9 +95,10 @@ class StopHook(unittest.TestCase):
 
     def test_a_confirmed_save_from_any_client_means_no_nudge(self):
         saves = {
-            "mcp-add": [tool_use("mcp__shared-memory__mem_add", content="x"), tool_result(SAVED, as_list=True)],
-            "mcp-update": [tool_use("mcp__shared-memory__mem_update", id=ID), tool_result(UPDATED, as_list=True)],
-            "cli": [tool_use("Bash", command="python3 ~/x/scripts/mem.py add 'x' --category decision"), tool_result(SAVED)],
+            "mcp-add": claude_call("mcp__shared-memory__mem_add", SAVED, as_list=True, content="x"),
+            "mcp-update": claude_call("mcp__shared-memory__mem_update", UPDATED, as_list=True, id=ID),
+            "cli": claude_call("Bash", SAVED, command="python3 ~/x/scripts/mem.py add 'x' --category decision"),
+            "mem.sh": claude_call("Bash", SAVED, command="~/.hermes/skills/productivity/shared-memory/scripts/mem.sh add x"),
             "codex": codex_call("python3 mem.py update x --content y", UPDATED),
         }
         for session, lines in saves.items():
@@ -95,22 +106,30 @@ class StopHook(unittest.TestCase):
 
     def test_a_save_that_did_not_happen_does_not_count(self):
         attempts = {
-            "mention": [tool_use("Bash", command="rg 'mem.py add' skill/"), tool_result("skill/SKILL.md:12: mem.py add ...")],
-            "heredoc": [tool_use("Bash", command="cat >notes <<'EOF'\nmem.py add x\nEOF"), tool_result("")],
-            "short-circuit": [tool_use("Bash", command="false && python3 mem.py add x"), tool_result("Exit code 1")],
-            "failed": [tool_use("Bash", command="python3 mem.py add x"),
-                       tool_result("shared-memory error: <urlopen error [Errno 61] Connection refused>")],
-            "mcp-error": [tool_use("mcp__shared-memory__mem_add", content=""), tool_result("Error: content must not be empty", True)],
+            "mention": claude_call("Bash", "skill/SKILL.md:12: mem.py add ...", command="rg 'mem.py add' skill/"),
+            "heredoc": claude_call("Bash", "", command="cat >notes <<'EOF'\nmem.py add x\nEOF"),
+            "short-circuit": claude_call("Bash", "Exit code 1", command="false && python3 mem.py add x"),
+            "failed": claude_call("Bash", "shared-memory error: <urlopen error [Errno 61] Connection refused>",
+                                  command="python3 mem.py add x"),
+            "mcp-error": claude_call("mcp__shared-memory__mem_add", "Error: content must not be empty", True, content=""),
             "codex-mention": codex_call("rg 'mem.py add'", "README.md: mem.py add"),
-            "quoted-in-input": [tool_use("Write", file_path="notes.md", content=SAVED), tool_result("File created")],
-            "structured-input": [tool_use("mcp__notes__store", record={"type": "tool_result", "content": SAVED}),
-                                 tool_result("stored")],
+            "quoted-in-input": claude_call("Write", "File created", file_path="notes.md", content=SAVED),
+            "structured-input": claude_call("mcp__notes__store", "stored", record={"type": "tool_result", "content": SAVED}),
+            # Confirmation-shaped text in the result of a call that is not a memory write:
+            "log-read": claude_call("Read", "earlier run:\n" + SAVED, file_path="~/.cache/run.log"),
+            "memory-quotes-it": claude_call("mcp__shared-memory__mem_get", json.dumps({"content": UPDATED}), True, id=ID),
+            "search-quotes-it": claude_call("mcp__shared-memory__mem_search", f"Found 1 memory:\n[{ID}] {SAVED}", True, query="x"),
+            "failed-then-unrelated": claude_call("Bash", "shared-memory error: timed out", command="python3 mem.py add x")
+                                     + claude_call("Read", SAVED, file_path="notes.md"),
+            "cli-search-quotes-it": claude_call("Bash", f"Found 1 memory:\n[{ID}] {SAVED}", command="python3 mem.py search postgres"),
+            "failed-with-fallback": claude_call("Bash", "shared-memory error: timed out\nSaved nothing",
+                                                command="python3 mem.py add x || echo 'Saved nothing'"),
         }
         for session, lines in attempts.items():
             self.assert_nudged(self.stop(lines + WORK, session=session), session)
 
     def test_a_save_is_remembered_so_later_stops_do_not_rescan(self):
-        saved = [tool_use("mcp__shared-memory__mem_add", content="x"), tool_result(SAVED, as_list=True)] + WORK
+        saved = claude_call("mcp__shared-memory__mem_add", SAVED, as_list=True, content="x") + WORK
         self.assertEqual(self.stop(saved), "")
         with mock.patch.object(mem, "scan_transcript", side_effect=AssertionError("transcript scanned again")):
             self.assertEqual(self.stop(saved + [tool_use("Read", file_path="b")] * 5), "")
