@@ -1,0 +1,38 @@
+# Self-host in one command: the server plus Postgres with pgvector.
+#   cp .env.example .env    # set POSTGRES_PASSWORD, MCP_API_KEY and EMBEDDING_API_KEY
+#   docker compose up -d    # agents on this machine connect to http://localhost:3000/mcp
+# Postgres is not published at all, and the server only on 127.0.0.1 (Docker bypasses host
+# firewalls such as ufw). For other machines, put an HTTPS reverse proxy in front.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      DATABASE_URL: postgres://memory:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/memory
+      MCP_API_KEY: ${MCP_API_KEY:?set MCP_API_KEY in .env}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      SEARCH_MIN_SIMILARITY: ${SEARCH_MIN_SIMILARITY:-}
+      DEDUP_SIMILARITY: ${DEDUP_SIMILARITY:-}
+      PG_POOL_MAX: ${PG_POOL_MAX:-}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: memory
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: memory
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory -d memory"]
+      interval: 5s
+      retries: 12
+
+volumes:
+  pgdata:
