@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -316,7 +317,6 @@ def save_state(session_id, state):
 TOOL_CALL_TYPES = ("tool_use", "function_call", "custom_tool_call")
 TOOL_RESULT_TYPES = ("tool_result", "function_call_output", "custom_tool_call_output")
 SAVE_TOOL = re.compile(r"mem_(add|update)")
-CLI_WRITE = re.compile(r"mem\.(?:py|sh)[\\'\"]*\s+(?:add|update)\b")  # not search, get, list, stats
 # The server's reply to a save, whichever client made it: an MCP tool, mem.py or mem.sh.
 SAVE_CONFIRMED = re.compile(r"Saved \[[a-z]+\] \(id: [0-9a-f-]{36}\)|Updated \[[0-9a-f-]{36}\]")
 
@@ -325,10 +325,86 @@ def _as_text(value):
     return value if isinstance(value, str) else json.dumps(value)
 
 
+def _commands(tool_input):
+    """Shell commands in a tool call's input: Claude's {"command": "..."}, or Codex's arguments
+    JSON with "command": [argv...] or "cmd". File contents and patches are not commands."""
+    if isinstance(tool_input, str):
+        try:
+            tool_input = json.loads(tool_input)
+        except ValueError:
+            return []
+    command = tool_input.get("command", tool_input.get("cmd")) if isinstance(tool_input, dict) else None
+    if isinstance(command, str):
+        return [command]
+    if isinstance(command, list):
+        return [c for c in command if isinstance(c, str)]
+    return []
+
+
+HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+SEPARATORS = set(";&|()\n")  # runs of these end a simple command (; && || | & ( ) newline)
+WRAPPERS = {"sudo", "env", "command", "exec", "time", "nohup", "nice", "builtin"}
+ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+INTERPRETER = re.compile(r"python(\d+(\.\d+)?)?|bash|sh|zsh|dash")
+
+
+def _drop_heredoc_bodies(command):
+    """The command without here-document bodies: text handed to a program, never run."""
+    kept, delimiter = [], None
+    for line in command.split("\n"):
+        if delimiter is not None:
+            if line.lstrip("\t") == delimiter:
+                delimiter = None
+            continue
+        kept.append(line)
+        found = HEREDOC_START.search(line)
+        delimiter = found.group(2) if found else None
+    return "\n".join(kept)
+
+
+def _simple_commands(command):
+    """The words of each simple command, split where a shell would split them. Comments (#) and
+    quotes are handled by shlex."""
+    lexer = shlex.shlex(_drop_heredoc_bodies(command), posix=True, punctuation_chars="();<>|&\n")
+    lexer.whitespace = " \t\r"  # a newline separates commands
+    lexer.whitespace_split = True
+    words = []
+    for word in lexer:
+        if set(word) <= SEPARATORS:
+            if words:
+                yield words
+            words = []
+        else:
+            words.append(word)
+    if words:
+        yield words
+
+
+def _is_cli_write(words):
+    """mem.py/mem.sh add|update as the command itself, or as the script an interpreter runs."""
+    while words and (words[0] in WRAPPERS or ASSIGNMENT.match(words[0]) or words[0].startswith("-")):
+        words = words[1:]  # sudo/env/..., VAR=value, and their options
+    if words and INTERPRETER.fullmatch(os.path.basename(words[0])):
+        words = words[1:]
+        while words and words[0].startswith("-"):  # interpreter options such as -u or -I
+            words = words[1:]
+    return len(words) >= 2 and words[0].endswith(("mem.py", "mem.sh")) and words[1] in ("add", "update")
+
+
+def _runs_cli_write(command):
+    """True when a shell command runs mem.py/mem.sh add|update as a command. A mention is not one:
+    a comment, quoted text, another program's argument (echo, grep), or a here-document body."""
+    try:
+        return any(_is_cli_write(words) for words in _simple_commands(command))
+    except ValueError:  # unbalanced quotes
+        return False
+
+
 def _is_memory_write(call):
-    """An MCP save tool, or a call whose input runs `mem.py add|update` or `mem.sh add|update`."""
-    tool_input = _as_text(call.get("input", call.get("arguments")))
-    return bool(SAVE_TOOL.search(call.get("name", ""))) or bool(CLI_WRITE.search(tool_input))
+    """An MCP save tool, or a shell call that runs mem.py/mem.sh add|update as a command."""
+    if SAVE_TOOL.search(call.get("name", "")):
+        return True
+    return any(_runs_cli_write(c) for c in _commands(call.get("input", call.get("arguments"))))
 
 
 def _typed_nodes(node):
