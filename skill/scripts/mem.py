@@ -14,7 +14,6 @@ import io
 import json
 import os
 import re
-import shlex
 import socket
 import subprocess
 import sys
@@ -315,101 +314,31 @@ def save_state(session_id, state):
 # ---------- transcript scan (stop hook) ----------
 
 TOOL_CALL_TYPES = ("tool_use", "function_call", "custom_tool_call")
-SAVE_CALL = re.compile(r"mem_(add|update)")
+TOOL_RESULT_TYPES = ("tool_result", "function_call_output", "custom_tool_call_output")
+# The server's reply to a save, whichever client made it: an MCP tool, mem.py or mem.sh.
+SAVE_CONFIRMED = re.compile(r"Saved \[[a-z]+\] \(id: [0-9a-f-]{36}\)|Updated \[[0-9a-f-]{36}\]")
 
 
-def _tool_calls_in(node):
-    """(name, input) for each tool call in a parsed transcript line, at any depth. Inputs are
-    not searched: they are arguments, and may well contain text that looks like a transcript."""
+def _typed_nodes(node):
+    """Every dict with a "type" in a parsed transcript line. A tool call's own input is skipped:
+    it holds arguments, which may quote anything."""
     if isinstance(node, dict):
-        if node.get("type") in TOOL_CALL_TYPES and isinstance(node.get("name"), str):
-            yield node["name"], node.get("input", node.get("arguments"))
-            return
+        if "type" in node:
+            yield node
+            if node["type"] in TOOL_CALL_TYPES:
+                return
         for value in node.values():
-            yield from _tool_calls_in(value)
+            yield from _typed_nodes(value)
     elif isinstance(node, list):
         for value in node:
-            yield from _tool_calls_in(value)
+            yield from _typed_nodes(value)
 
 
-def _commands(tool_input):
-    """Shell commands in a tool call's input: Claude's {"command": "..."}, or Codex's arguments
-    JSON with "command": [argv...] or "cmd". File contents and patches are not commands."""
-    if isinstance(tool_input, str):
-        try:
-            tool_input = json.loads(tool_input)
-        except ValueError:
-            return []
-    command = tool_input.get("command", tool_input.get("cmd")) if isinstance(tool_input, dict) else None
-    if isinstance(command, str):
-        return [command]
-    if isinstance(command, list):
-        return [c for c in command if isinstance(c, str)]
-    return []
-
-
-HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
-SEPARATORS = set(";&|()\n")  # runs of these end a simple command (; && || | & ( ) newline)
-WRAPPERS = {"sudo", "env", "command", "exec", "time", "nohup", "nice", "builtin"}
-ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
-PYTHON = re.compile(r"python(\d+(\.\d+)?)?")
-
-
-def _drop_heredoc_bodies(command):
-    """The command without here-document bodies: text handed to a program, never run."""
-    kept, delimiter = [], None
-    for line in command.split("\n"):
-        if delimiter is not None:
-            if line.lstrip("\t") == delimiter:
-                delimiter = None
-            continue
-        kept.append(line)
-        found = HEREDOC_START.search(line)
-        delimiter = found.group(2) if found else None
-    return "\n".join(kept)
-
-
-def _simple_commands(command):
-    """The words of each simple command, split where a shell would split them."""
-    lexer = shlex.shlex(_drop_heredoc_bodies(command), posix=True, punctuation_chars="();<>|&\n")
-    lexer.whitespace = " \t\r"  # a newline separates commands
-    lexer.whitespace_split = True
-    words = []
-    for word in lexer:
-        if set(word) <= SEPARATORS:
-            if words:
-                yield words
-            words = []
-        else:
-            words.append(word)
-    if words:
-        yield words
-
-
-def _is_mem_save(words):
-    """mem.py add|update as the command itself, or as the script python runs."""
-    while words and (words[0] in WRAPPERS or ASSIGNMENT.match(words[0]) or words[0].startswith("-")):
-        words = words[1:]  # sudo/env/..., VAR=value, and their options
-    if words and PYTHON.fullmatch(os.path.basename(words[0])):
-        words = words[1:]
-        while words and words[0].startswith("-"):  # interpreter options such as -u or -I
-            words = words[1:]
-    return len(words) >= 2 and words[0].endswith("mem.py") and words[1] in ("add", "update")
-
-
-def _runs_mem_save(command):
-    """True when a shell command runs `mem.py add|update`. A mention is not a save: quoted text,
-    an argument of another program (echo, grep), or the body of a here-document."""
-    try:
-        return any(_is_mem_save(words) for words in _simple_commands(command))
-    except ValueError:  # unbalanced quotes
-        return False
-
-
-def tool_calls(transcript_path):
-    """Ordered tool names called in a JSONL transcript (Claude/Codex style). A shell call that
-    runs `mem.py add|update` is reported as "mem_add (via mem.py)", since it saves too."""
-    names = []
+def scan_transcript(transcript_path):
+    """(tool calls, saved) for a JSONL transcript (Claude Code or Codex). saved means a tool
+    result holds the server's save confirmation, so a command that only mentions mem.py add,
+    never ran, or failed is not a save."""
+    calls, saved = 0, False
     try:
         with open(transcript_path) as f:
             for line in f:
@@ -417,12 +346,14 @@ def tool_calls(transcript_path):
                     entry = json.loads(line)
                 except ValueError:
                     continue
-                for name, tool_input in _tool_calls_in(entry):
-                    saved = any(_runs_mem_save(c) for c in _commands(tool_input))
-                    names.append("mem_add (via mem.py)" if saved else name)
+                for node in _typed_nodes(entry):
+                    if node["type"] in TOOL_CALL_TYPES:
+                        calls += 1
+                    elif node["type"] in TOOL_RESULT_TYPES and not saved:
+                        saved = bool(SAVE_CONFIRMED.search(json.dumps(node.get("content", node.get("output")))))
     except OSError:
-        return []
-    return names
+        return 0, False
+    return calls, saved
 
 
 # ---------- hook output formats ----------
@@ -523,11 +454,11 @@ def hook(event, tool, once=False, cached=False):
         path = data.get("transcript_path") or data.get("transcriptPath")
         if not path:
             return
-        names = tool_calls(path)
-        if any(SAVE_CALL.search(n) for n in names):
+        calls, saved = scan_transcript(path)
+        if saved:
             state["saved"] = True
             save_state(session_id, state)
-        elif len(names) >= STOP_NUDGE_AFTER:
+        elif calls >= STOP_NUDGE_AFTER:
             state["nudged"] = True
             save_state(session_id, state)
             emit_stop_block(tool, STOP_REASON)

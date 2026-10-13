@@ -1,5 +1,9 @@
 """The stop hook: one nudge per session, and only for a session that has saved nothing.
 
+A save counts only when a tool result holds the server's confirmation ("Saved [cat] (id: ...)" or
+"Updated [id]"), however it was made. A command that mentions mem.py add, never ran, or failed is
+not a save.
+
 Run: python3 -m unittest discover -s tests
 """
 import contextlib
@@ -15,45 +19,34 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 import mem  # noqa: E402
 
+ID = "3a131e42-1489-4208-9ef4-5aeb4a1eaf5e"
+SAVED = f"Saved [decision] (id: {ID})\nChose Postgres\ntags: db\n[embedded]"
+UPDATED = f"Updated [{ID}]\nChose Postgres\ntags: db"
+
 
 def tool_use(name, **tool_input):
-    """One assistant line of a Claude Code JSONL transcript."""
+    """An assistant line of a Claude Code transcript calling one tool."""
     return json.dumps({"type": "assistant", "message": {"content": [
         {"type": "tool_use", "id": "toolu_1", "name": name, "input": tool_input}]}})
 
 
-class CliSaveDetection(unittest.TestCase):
-    """Only mem.py run as a command (directly or by python) counts; text that mentions it does not."""
+def tool_result(text, as_list=False):
+    """The user line carrying a tool's result; MCP tools give a list of text parts, Bash a string."""
+    content = [{"type": "text", "text": text}] if as_list else text
+    return json.dumps({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": content}]}})
 
-    def test_real_invocations(self):
-        for command in [
-            "~/.agents/skills/shared-memory-mcp/scripts/mem.py add 'Decision: y' --category decision",
-            'python3 mem.py update abc --content "x"',
-            "SHARED_MEMORY_AGENT=codex python3 -u scripts/mem.py add z",
-            "cd ~/x && /usr/bin/python3 mem.py add z",
-            "python3 mem.py add z | tail -1",
-            "ls\npython3 mem.py add 'on the second line'",
-            "( cd x; python mem.py update id --tags a )",
-            "env python3.12 mem.py add z",
-            "cat <<EOF > notes\nmem.py add inside\nEOF\npython3 mem.py add after-the-heredoc",
-        ]:
-            self.assertTrue(mem._runs_mem_save(command), command)
 
-    def test_mentions(self):
-        for command in [
-            "rg 'mem.py add' skill/",
-            "echo mem.py add",
-            "printf '%s\\n' mem.py update",
-            "grep -n mem.py add",
-            "cat >notes <<'EOF'\nmem.py add x\nEOF",
-            "cat <<-EOF\n\tpython3 mem.py add x\n\tEOF",
-            "git commit -m 'teach mem.py add'",
-            "python3 -c 'print(1)' mem.py add",
-            "vim mem.py",
-            "python3 mem.py search add",
-            "echo 'unbalanced",
-        ]:
-            self.assertFalse(mem._runs_mem_save(command), command)
+def codex_call(script, output):
+    """A Codex shell call and its output, as two rollout lines."""
+    call = {"type": "response_item", "payload": {"type": "function_call", "name": "shell", "call_id": "c1",
+                                                 "arguments": json.dumps({"command": ["bash", "-lc", script]})}}
+    out = {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1",
+                                                "output": json.dumps({"output": output, "metadata": {"exit_code": 0}})}}
+    return [json.dumps(call), json.dumps(out)]
+
+
+WORK = [tool_use("Read", file_path="a"), tool_result("file text")] * 12
 
 
 class StopHook(unittest.TestCase):
@@ -76,7 +69,8 @@ class StopHook(unittest.TestCase):
             mem.hook("stop", "claude")
         return out.getvalue()
 
-    def assert_nudged(self, output):
+    def assert_nudged(self, output, msg=None):
+        self.assertTrue(output, msg or "expected a nudge")
         self.assertEqual(json.loads(output)["decision"], "block")
         self.assertIn("saved nothing", json.loads(output)["reason"])
 
@@ -85,51 +79,45 @@ class StopHook(unittest.TestCase):
         self.assert_nudged(self.stop([tool_use("Bash", command="ls")] * 10))
 
     def test_nudges_once_per_session_however_long_it_runs(self):
-        work = [tool_use("Read", file_path="a")] * 10
-        self.assert_nudged(self.stop(work))
+        self.assert_nudged(self.stop(WORK))
         for extra in (10, 25, 200):
-            self.assertEqual(self.stop(work + [tool_use("Edit", file_path="a")] * extra), "", extra)
+            self.assertEqual(self.stop(WORK + [tool_use("Edit", file_path="a")] * extra), "", extra)
 
-    def test_a_session_that_saved_anything_is_never_nudged(self):
-        saved = [tool_use("mcp__shared-memory__mem_update", id="x")] + [tool_use("Bash", command="make")] * 50
-        self.assertEqual(self.stop(saved), "")
-        via_cli = [tool_use("Bash", command='python3 ~/x/scripts/mem.py add "Decision" --category decision')]
-        self.assertEqual(self.stop(via_cli + [tool_use("Read", file_path="a")] * 30, session="s2"), "")
+    def test_a_confirmed_save_from_any_client_means_no_nudge(self):
+        saves = {
+            "mcp-add": [tool_use("mcp__shared-memory__mem_add", content="x"), tool_result(SAVED, as_list=True)],
+            "mcp-update": [tool_use("mcp__shared-memory__mem_update", id=ID), tool_result(UPDATED, as_list=True)],
+            "cli": [tool_use("Bash", command="python3 ~/x/scripts/mem.py add 'x' --category decision"), tool_result(SAVED)],
+            "codex": codex_call("python3 mem.py update x --content y", UPDATED),
+        }
+        for session, lines in saves.items():
+            self.assertEqual(self.stop(lines + WORK, session=session), "", session)
 
-    def test_mentioning_mem_py_add_is_not_a_save(self):
-        mentions = [
-            tool_use("Bash", command="rg 'mem.py add' skill/"),
-            tool_use("Bash", command='grep -n "mem.py update" README.md'),
-            tool_use("Write", file_path="notes.md", content="Run python3 mem.py add to save.\n"),
-            tool_use("Edit", file_path="a.py", old_string="x", new_string="subprocess.run(['mem.py', 'add'])"),
-        ]
-        self.assert_nudged(self.stop(mentions + [tool_use("Read", file_path="a")] * 10))
-
-    def test_a_real_cli_save_counts_however_the_command_is_written(self):
-        for i, command in enumerate([
-                'cd ~/x && SHARED_MEMORY_AGENT=codex python3 scripts/mem.py update abc --content "x"',
-                "~/.agents/skills/shared-memory-mcp/scripts/mem.py add 'Decision: y' --category decision",
-                "python3 mem.py add z | tail -1"]):
-            self.assertEqual(self.stop([tool_use("Bash", command=command)] + [tool_use("Read", file_path="a")] * 20,
-                                       session=f"cli{i}"), "", command)
-
-    def test_codex_shell_calls_are_read_too(self):
-        def shell(script):
-            return json.dumps({"type": "response_item", "payload": {"type": "function_call", "name": "shell",
-                              "arguments": json.dumps({"command": ["bash", "-lc", script]})}})
-        self.assertEqual(self.stop([shell("python3 mem.py add 'saved'")] + [shell("ls")] * 15, session="codex-save"), "")
-        self.assert_nudged(self.stop([shell("rg 'mem.py add'")] + [shell("ls")] * 15, session="codex-mention"))
+    def test_a_save_that_did_not_happen_does_not_count(self):
+        attempts = {
+            "mention": [tool_use("Bash", command="rg 'mem.py add' skill/"), tool_result("skill/SKILL.md:12: mem.py add ...")],
+            "heredoc": [tool_use("Bash", command="cat >notes <<'EOF'\nmem.py add x\nEOF"), tool_result("")],
+            "short-circuit": [tool_use("Bash", command="false && python3 mem.py add x"), tool_result("Exit code 1")],
+            "failed": [tool_use("Bash", command="python3 mem.py add x"),
+                       tool_result("shared-memory error: <urlopen error [Errno 61] Connection refused>")],
+            "mcp-error": [tool_use("mcp__shared-memory__mem_add", content=""), tool_result("Error: content must not be empty", True)],
+            "codex-mention": codex_call("rg 'mem.py add'", "README.md: mem.py add"),
+            "quoted-in-input": [tool_use("Write", file_path="notes.md", content=SAVED), tool_result("File created")],
+            "structured-input": [tool_use("mcp__notes__store", record={"type": "tool_result", "content": SAVED}),
+                                 tool_result("stored")],
+        }
+        for session, lines in attempts.items():
+            self.assert_nudged(self.stop(lines + WORK, session=session), session)
 
     def test_a_save_is_remembered_so_later_stops_do_not_rescan(self):
-        saved = [tool_use("mcp__shared-memory__mem_add", content="x")] + [tool_use("Read", file_path="a")] * 12
+        saved = [tool_use("mcp__shared-memory__mem_add", content="x"), tool_result(SAVED, as_list=True)] + WORK
         self.assertEqual(self.stop(saved), "")
-        with mock.patch.object(mem, "tool_calls", side_effect=AssertionError("transcript scanned again")):
+        with mock.patch.object(mem, "scan_transcript", side_effect=AssertionError("transcript scanned again")):
             self.assertEqual(self.stop(saved + [tool_use("Read", file_path="b")] * 5), "")
 
     def test_each_session_gets_its_own_nudge(self):
-        work = [tool_use("Grep", pattern="x")] * 12
-        self.assert_nudged(self.stop(work, session="first"))
-        self.assert_nudged(self.stop(work, session="second"))
+        self.assert_nudged(self.stop(WORK, session="first"))
+        self.assert_nudged(self.stop(WORK, session="second"))
 
     def test_a_session_nudged_by_the_old_rule_is_not_nudged_again(self):
         with open(mem.state_path("old"), "w") as f:
