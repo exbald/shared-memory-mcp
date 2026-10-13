@@ -1,20 +1,21 @@
 {
   "name": "shared-memory-mcp",
-  "version": "1.0.0",
-  "description": "MCP server for shared cross-agent memory via Supabase",
+  "version": "2.0.0",
+  "description": "MCP server for persistent cross-agent memory with hybrid keyword + vector search on Postgres and pgvector",
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node server.ts",
+    "test": "sh scripts/test.sh",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@supabase/supabase-js": "^2.104.1",
-    "zod": "^4.3.6"
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
-    "typescript": "^5.9.3",
-    "vercel": "^52.0.0"
+    "@types/node": "^24.19.2",
+    "typescript": "^5.9.3"
   }
 }

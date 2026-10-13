@@ -1,7 +1,0 @@
-{
-  "rewrites": [
-    { "source": "/mcp", "destination": "/api/mcp" }
-  ],
-  "framework": null,
-  "outputDirectory": "dist"
-}

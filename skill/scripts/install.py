@@ -40,7 +40,7 @@ One memory store shared by every agent and device the user runs. Use it, don't j
 
 - **Recall first.** A session-start hook injects this project's memories when the tool supports it. Before answering about a project, client, person, server, or earlier decision, `mem_search` it. Never guess what was decided.
 - **Save what lasts.** Decisions (what + why + what was rejected), stated preferences, project status changes (shipped, merged, blocked, paused), and facts that are costly to rediscover. `category` + project-slug tag first + your tool name as `agent`. Self-contained, absolute dates, 1–6 sentences.
-- **Update, don't duplicate.** `mem_search` the topic before `mem_add`; if a memory covers it, `mem_update` that id (or `mem_delete` if it is now wrong).
+- **Store, skip, update or merge.** `mem_search` the topic before `mem_add` (`mem_add` also lists similar memories). Store it if nothing covers it; skip it if a memory already says it; `mem_update` that id if the fact changed; merge overlapping memories into one with `mem_update` and `mem_delete` the rest. `mem_delete` a memory that is now wrong.
 - **Never save secrets** or what git/the repo already records.
 - **Session summary.** Before ending a session (or before compaction) that moved a project forward, save or update one `project` status memory: done, decided, open, next step.
 - Without MCP tools: `python3 {MEM} search|add|update ...`. Full rules: the `shared-memory-mcp` skill.
