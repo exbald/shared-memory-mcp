@@ -5,7 +5,6 @@ holding one of them could cut a reply apart or pose as a second memory. mem.py s
 
 Run: python3 -m unittest discover -s tests
 """
-import json
 import os
 import sys
 import unittest
@@ -14,24 +13,11 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
 
 import mem  # noqa: E402
+from local_server import Endpoint  # noqa: E402
 
 ID1 = "3a131e42-1489-4208-9ef4-5aeb4a1eaf5e"
 ID2 = "bc8b3ed3-64dc-4601-b7e2-8d7134d02e98"
 BREAKERS = ["\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029", "\x0b", "\x0c"]
-
-
-class FakeResponse:
-    def __init__(self, body):
-        self.body = body.encode()
-
-    def read(self):
-        return self.body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
 
 
 class SplitMemories(unittest.TestCase):
@@ -49,18 +35,12 @@ class SplitMemories(unittest.TestCase):
 
 
 class CallParsesTheSseFrame(unittest.TestCase):
-    def setUp(self):
-        env = mock.patch.dict(os.environ, {"SHARED_MEMORY_URL": "http://127.0.0.1:9/mcp", "SHARED_MEMORY_API_KEY": "k"})
-        env.start()
-        self.addCleanup(env.stop)
-
-    def reply(self, text):
-        body = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": text}]}}
-        return "event: message\ndata: " + json.dumps(body, ensure_ascii=False) + "\n\n"
-
     def test_a_line_breaker_inside_the_json_does_not_cut_the_data_line(self):
-        for c in BREAKERS:
-            with mock.patch.object(mem.urllib.request, "urlopen", return_value=FakeResponse(self.reply(f"a{c}b"))):
+        # The local endpoint writes these characters raw inside the JSON string (ensure_ascii=False).
+        with Endpoint() as server, mock.patch.dict(os.environ, {
+                "SHARED_MEMORY_URL": server.url, "SHARED_MEMORY_API_KEY": "k", "no_proxy": "127.0.0.1,::1,localhost"}):
+            for c in BREAKERS:
+                server.text = f"a{c}b"
                 self.assertEqual(mem.call("mem_stats", {}), f"a{c}b", repr(c))
 
 
