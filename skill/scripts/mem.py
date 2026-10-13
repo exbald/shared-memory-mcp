@@ -111,6 +111,14 @@ def _discard():
 atexit.register(_discard)
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Following a redirect would turn the POST into a GET and could carry the API key to
+    another host. Returning None makes urllib raise HTTPError, as the direct path does."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _uses_proxy(parts):
     """http.client ignores proxy settings, so a configured proxy means urllib does the request.
     The bypass check gets host[:port], as urllib's own does, so NO_PROXY entries with a port match."""
@@ -141,9 +149,9 @@ def post(url, body, headers, retry=False):
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError("not an http(s) URL")
-    if _uses_proxy(parts):
-        with urllib.request.urlopen(urllib.request.Request(url, data=body, method="POST", headers=headers),
-                                    timeout=TIMEOUT) as resp:
+    if _uses_proxy(parts):  # a fresh opener reads the current proxy settings
+        opener = urllib.request.build_opener(_RefuseRedirects)
+        with opener.open(urllib.request.Request(url, data=body, method="POST", headers=headers), timeout=TIMEOUT) as resp:
             return resp.read()
     target = (parts.path or "/") + ("?" + parts.query if parts.query else "")
     for attempt in (1, 2):

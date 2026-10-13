@@ -20,6 +20,7 @@ class Endpoint:
         self.connections = 0
         self.requests = []  # (headers, JSON-RPC body) per request that reached the server
         self.paths = []
+        self.gets = []  # (path, headers) of GET requests: redirects that were followed
         self.plan = []
         self.text = text
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -59,8 +60,9 @@ class Endpoint:
                 if how == "drop":
                     self.close_connection = True
                     return
-                if isinstance(how, int):
-                    self.reply(how, "application/json", b'{"error": "Unauthorized"}')
+                if isinstance(how, int):  # a 3xx points at a page that would answer a GET
+                    extra = {"Location": "http://redirect.example/landing"} if 300 <= how < 400 else {}
+                    self.reply(how, "application/json", b'{"error": "Unauthorized"}', **extra)
                     return
                 if how == "slow":  # longer than the client's timeout in the tests that use it
                     time.sleep(0.6)
@@ -87,10 +89,17 @@ class Endpoint:
                 if how in ("ok-then-close", "ok-close-announced"):
                     self.close_connection = True
 
-            def reply(self, status, content_type, data, close=False):
+            def do_GET(self):  # only a client that followed a redirect sends a GET
+                endpoint.gets.append((self.path, dict(self.headers)))
+                result = {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "redirect target"}]}}
+                self.reply(200, "text/event-stream", ("data: " + json.dumps(result) + "\n\n").encode())
+
+            def reply(self, status, content_type, data, close=False, **extra):
                 self.send_response(status)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))
+                for name, value in extra.items():
+                    self.send_header(name, value)
                 if close:
                     self.send_header("Connection", "close")
                 self.end_headers()

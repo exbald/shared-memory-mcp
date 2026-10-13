@@ -143,14 +143,28 @@ class Transport(unittest.TestCase):
         self.assertEqual(len(self.server.requests), 2)
         self.assertEqual(self.server.connections, 1, "direct, on the kept-alive connection")
 
-    def test_with_a_proxy_configured_urllib_does_the_request(self):
-        frame = 'event: message\ndata: {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "via proxy"}]}}\n\n'
-        with mock.patch.object(mem.urllib.request, "getproxies", return_value={"http": "http://proxy.invalid:3128"}), \
-                mock.patch.object(mem.urllib.request, "proxy_bypass", return_value=False), \
-                mock.patch.object(mem.urllib.request, "urlopen", return_value=FakeResponse(frame)) as urlopen:
-            self.assertEqual(mem.call("mem_stats", {}), "via proxy")
-        self.assertEqual(urlopen.call_count, 1)
-        self.assertEqual(self.server.requests, [], "http.client was not used")
+    def via_proxy(self):
+        """The local endpoint plays an HTTP proxy for a made-up server URL."""
+        self.use("http://memory.example/mcp")
+        proxy = mock.patch.dict(os.environ, {"http_proxy": self.server.url.rsplit("/", 1)[0]})
+        proxy.start()
+        self.addCleanup(proxy.stop)
+
+    def test_with_a_proxy_configured_the_request_goes_through_it(self):
+        self.via_proxy()
+        self.assertEqual(mem.call("mem_stats", {}), "mem_stats {}")
+        self.assertEqual(self.server.paths, ["http://memory.example/mcp"], "absolute-form target: it went through the proxy")
+
+    def test_redirects_are_refused_through_a_proxy_too(self):
+        # Following one would turn the POST into a GET, return the target's page as the tool's
+        # answer, and carry the API key to the other host.
+        self.via_proxy()
+        self.server.plan = [302]
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            mem.call("mem_stats", {})
+        with ctx.exception as err:
+            self.assertEqual(str(err), "HTTP Error 302: Found")
+        self.assertEqual(self.server.gets, [], "the redirect was not followed")
 
 
 class Connections(unittest.TestCase):
@@ -159,20 +173,6 @@ class Connections(unittest.TestCase):
                                 ("https://example.com:8443/mcp", "example.com", 8443)):
             conn = mem._connection(urllib.parse.urlsplit(url))
             self.assertEqual((conn.host, conn.port), (host, port), url)
-
-
-class FakeResponse:
-    def __init__(self, body):
-        self.body = body.encode()
-
-    def read(self):
-        return self.body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
 
 
 if __name__ == "__main__":
