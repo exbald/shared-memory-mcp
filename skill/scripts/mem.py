@@ -8,12 +8,18 @@ Config: SHARED_MEMORY_URL, SHARED_MEMORY_API_KEY (env or ~/.config/shared-memory
         The URL can also come from instance.env next to SKILL.md; a key never does.
 """
 import argparse
+import atexit
+import http.client
+import io
 import json
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
 import urllib.request
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -89,6 +95,91 @@ def load_config():
     return {"url": url, "key": key}
 
 
+# One keep-alive connection, reused for the life of the process. The session-start hook makes
+# two calls, and every new HTTPS connection costs a TCP and a TLS handshake before the request
+# (about half a second from Asia to a server in Europe).
+_conn = {"origin": None, "conn": None}
+READ_ONLY = {"mem_search", "mem_list", "mem_get", "mem_stats"}
+
+
+def _discard():
+    """Close and forget the connection: after any error it may hold half a request."""
+    if _conn["conn"]:
+        _conn["conn"].close()
+    _conn.update(origin=None, conn=None)
+
+
+atexit.register(_discard)
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Following a redirect would turn the POST into a GET and could carry the API key to
+    another host. Returning None makes urllib raise HTTPError, as the direct path does."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _uses_proxy(parts):
+    """http.client ignores proxy settings, so a configured proxy means urllib does the request.
+    The bypass check gets host[:port], as urllib's own does, so NO_PROXY entries with a port match."""
+    host = parts.netloc.rpartition("@")[2]
+    return bool(urllib.request.getproxies().get(parts.scheme)) and not urllib.request.proxy_bypass(host)
+
+
+def _connection(parts):
+    origin = (parts.scheme, parts.hostname, parts.port)
+    if _conn["origin"] != origin:
+        _discard()
+        # An explicit port: http.client would read the last group of a bare IPv6 address as one.
+        # A port written in the URL is kept as written, even 0.
+        port = parts.port if parts.port is not None else (443 if parts.scheme == "https" else 80)
+        cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+        _conn.update(origin=origin, conn=cls(parts.hostname, port, timeout=TIMEOUT))
+    return _conn["conn"]
+
+
+def post(url, body, headers, retry=False):
+    """POST and return the raw response body, over the kept-alive connection.
+
+    With retry (read-only tools only): a reused connection that fails while sending or before
+    the response's status line was most likely closed by the server while idle, so the request
+    goes out once more on a fresh connection. A write is never sent again, because a server
+    that saved it and then died looks the same. Timeouts and breaks after the answer started
+    are never retried either.
+    Raises ValueError for a malformed URL or header, and HTTPError for a status other than 2xx."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError("not an http(s) URL")
+    if _uses_proxy(parts):  # a fresh opener reads the current proxy settings
+        opener = urllib.request.build_opener(_RefuseRedirects)
+        with opener.open(urllib.request.Request(url, data=body, method="POST", headers=headers), timeout=TIMEOUT) as resp:
+            return resp.read()
+    target = (parts.path or "/") + ("?" + parts.query if parts.query else "")
+    for attempt in (1, 2):
+        conn = _connection(parts)
+        reused = conn.sock is not None
+        try:
+            conn.request("POST", target, body=body, headers=headers)
+            resp = conn.getresponse()
+        except OSError as err:  # includes a reset, a broken pipe, an SSL EOF and a timeout
+            _discard()
+            if retry and reused and attempt == 1 and not isinstance(err, socket.timeout):
+                continue
+            raise
+        except BaseException:
+            _discard()
+            raise
+        try:
+            data = resp.read()
+        except BaseException:
+            _discard()
+            raise
+        if not 200 <= resp.status < 300:
+            raise urllib.error.HTTPError(url, resp.status, resp.reason, resp.headers, io.BytesIO(data))
+        return data
+
+
 def call(tool, args):
     """Call one MCP tool over Streamable HTTP; return its text output."""
     cfg = load_config()
@@ -97,18 +188,18 @@ def call(tool, args):
                           "to ~/.config/shared-memory/env.")
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                        "params": {"name": tool, "arguments": args}}).encode()
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "X-API-Key": cfg["key"],
+        "User-Agent": "shared-memory-mem.py",
+    }
     try:
-        req = urllib.request.Request(cfg["url"], data=body, method="POST", headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-            "X-API-Key": cfg["key"],
-        })
-        resp = urllib.request.urlopen(req, timeout=TIMEOUT)
+        data = post(cfg["url"], body, headers, retry=tool in READ_ONLY)
     except ValueError:  # http.client rejects control characters and quotes the whole key in its message
         raise ConfigError("SHARED_MEMORY_URL is not a valid http(s) URL, or the URL or API key "
                           "contains invalid characters.") from None
-    with resp:
-        raw = resp.read().decode()
+    raw = data.decode()
     payload = raw
     if "data:" in raw:  # SSE framing; split on "\n" only (splitlines also breaks on U+2028 & co.)
         payload = "\n".join(l[5:].strip() for l in raw.split("\n") if l.startswith("data:"))
