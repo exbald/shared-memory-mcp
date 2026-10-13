@@ -31,6 +31,7 @@ describe("hybrid search", { skip: skipWithoutDb }, () => {
       ["chinese", { content: "記憶搜尋修好了，舊的備忘錄也找得到", createdAt: july("11") }],
       ["noVector", { content: "Grafana dashboard panel layout for the API latency board", createdAt: july("12"), embedded: false }],
       ["special", { content: "100% sure: under_score and back\\slash both survive", createdAt: july("13") }],
+      ["flag", { content: "Never run rm -rf on the backup volume", createdAt: july("15") }],
       ["rare1", { content: "rare widget item one", tags: ["rare-tag"], createdAt: july("01") }],
       ["rare2", { content: "rare widget item two", tags: ["rare-tag"], createdAt: july("02") }],
       ["rare3", { content: "rare widget item three", tags: ["rare-tag"], createdAt: july("03"), category: "decision" }],
@@ -101,9 +102,14 @@ describe("hybrid search", { skip: skipWithoutDb }, () => {
     assert.equal(text(await search({ query: "rare widget", max: 5 })), text(await search({ query: "rare widget", max: 5 })));
   });
 
-  test("a query that only excludes a word matches nothing, instead of everything else", async () => {
+  test("a query that reads as a pure negation (-word) cannot make the keyword list match every row", async () => {
     assert.equal(text(await search({ query: "-quantum", max: 5 })), "No memories found.");
     assert.equal(text(await search({ query: "-quantum", max: 5 }, keywordOnly)), "No memories found.");
+  });
+
+  test("but a CLI flag such as -rf is still found as literal text", async () => {
+    assert.equal(idsOf(await search({ query: "-rf", max: 5 }))[0], ids.flag);
+    assert.equal(idsOf(await search({ query: "-rf", max: 5 }, keywordOnly))[0], ids.flag);
   });
 
   test("a broken all-zero query vector cannot let every row through the similarity floor", async () => {

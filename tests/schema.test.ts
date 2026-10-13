@@ -2,6 +2,7 @@ import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import type { Sql } from "../lib/types.ts";
 import { createSql } from "../lib/deps.ts";
+import { addMemory } from "../lib/memories.ts";
 import { ensureSchema } from "../lib/schema.ts";
 import { TEST_URL, skipWithoutDb, testSql } from "./helpers/db.ts";
 
@@ -86,15 +87,22 @@ describe("schema", { skip: skipWithoutDb }, () => {
     await sql`drop table if exists memories`;
     await sql`create extension if not exists vector`;
     await sql.unsafe(`create table memories (
-      id uuid primary key default gen_random_uuid(), content text, category text, tags text[],
-      source_agent text, embedding vector(1536), created_at timestamptz default now())`);
+      id uuid primary key, content text, category text, tags text[],
+      source_agent text, embedding vector(1536), created_at timestamptz)`);
     const at = new Date("2026-05-01T00:00:00Z");
-    await sql`insert into memories (content, category, tags, source_agent, created_at)
-              values ('free-text category', 'note', '{x}', 'mem.sh', ${at}), ('no category', null, null, null, ${at})`;
+    await sql`insert into memories (id, content, category, tags, source_agent, created_at)
+              values (gen_random_uuid(), 'free-text category', 'note', '{x}', 'mem.sh', ${at}),
+                     (gen_random_uuid(), 'no category', null, null, null, ${at})`;
     await ensureSchema(sql);
     const rows = await sql`select content, category, tags, source_agent, updated_at from memories order by content`;
     assert.deepEqual(rows.map((r) => [r.category, r.tags, r.source_agent]), [["general", ["x", "note"], "mem.sh"], ["general", [], "unknown"]]);
     assert.ok(rows.every((r) => r.updated_at.toISOString() === at.toISOString()), "updated_at starts as created_at");
+
+    // The upgraded table must take the server's own inserts, which rely on column defaults.
+    const saved = await addMemory(sql, { id: crypto.randomUUID(), content: "saved after the upgrade", category: "fact", tags: [], agent: "codex", embedding: null });
+    assert.ok(Date.now() - saved.created_at.getTime() < 60_000 && saved.updated_at.getTime() === saved.created_at.getTime());
+    const [{ id }] = await sql`insert into memories (content) values ('only content') returning id`;
+    assert.ok(id, "id, category, tags and agent defaults are in place too");
   });
 
   test("a column of the wrong type stops the boot with a clear message", async () => {

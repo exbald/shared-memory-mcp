@@ -13,6 +13,7 @@ do $$
 declare
   col text[];
   actual text;
+  dflt text[];
 begin
   if not exists (select 1 from pg_extension where extname = 'vector') then
     create extension vector;
@@ -45,6 +46,19 @@ begin
     from pg_attribute where attrelid = 'memories'::regclass and attname = col[1] and not attisdropped;
     if actual is distinct from col[2] then
       raise exception 'memories.% is %, expected %', col[1], coalesce(actual, 'missing'), col[2];
+    end if;
+  end loop;
+
+  -- Inserts rely on these defaults, and a v1 table (or the updated_at added above) may lack them.
+  foreach dflt slice 1 in array array[
+    ['id', 'gen_random_uuid()'], ['category', '''general'''], ['tags', '''{}'''], ['source_agent', '''unknown'''],
+    ['created_at', 'now()'], ['updated_at', 'now()']]
+  loop
+    if not exists (
+      select 1 from pg_attrdef d join pg_attribute a on a.attrelid = d.adrelid and a.attnum = d.adnum
+      where d.adrelid = 'memories'::regclass and a.attname = dflt[1]
+    ) then
+      execute format('alter table memories alter column %I set default %s', dflt[1], dflt[2]);
     end if;
   end loop;
 
