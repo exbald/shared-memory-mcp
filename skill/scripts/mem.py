@@ -20,7 +20,7 @@ INSTANCE_FILE = os.path.join(SKILL_DIR, "instance.env")  # optional, for a priva
 ENV_FILE = os.path.expanduser("~/.config/shared-memory/env")
 STATE_DIR = os.path.expanduser("~/.cache/shared-memory")
 TIMEOUT = 8
-STOP_NUDGE_AFTER = 10  # tool calls since the last memory save
+STOP_NUDGE_AFTER = 10  # tool calls, with no memory saved, before the session's one nudge
 SNIPPET = 400  # chars per memory in injected context
 
 RULES = (
@@ -241,11 +241,7 @@ def tool_calls(transcript_path):
     return names
 
 
-def calls_since_save(names):
-    for i in range(len(names) - 1, -1, -1):
-        if re.search(r"mem_(add|update)", names[i]):
-            return len(names) - 1 - i
-    return len(names)
+SAVE_CALL = re.compile(r"mem_(add|update)")
 
 
 # ---------- hook output formats ----------
@@ -339,16 +335,15 @@ def hook(event, tool, once=False, cached=False):
                          "\n".join(f"- {clip(l, 300)}" for _, l in new))
 
     elif event == "stop":
-        if data.get("stop_hook_active"):
+        # One nudge per session at most ("nudged_at" marks a session nudged by an older version).
+        if data.get("stop_hook_active") or state.get("nudged") or "nudged_at" in state:
             return
         path = data.get("transcript_path") or data.get("transcriptPath")
         if not path:
             return
         names = tool_calls(path)
-        work = calls_since_save(names)
-        nudged_at = state.get("nudged_at", -1)
-        if work >= STOP_NUDGE_AFTER and len(names) - nudged_at >= STOP_NUDGE_AFTER:
-            state["nudged_at"] = len(names)
+        if len(names) >= STOP_NUDGE_AFTER and not any(SAVE_CALL.search(n) for n in names):
+            state["nudged"] = True
             save_state(session_id, state)
             emit_stop_block(tool, STOP_REASON)
 
