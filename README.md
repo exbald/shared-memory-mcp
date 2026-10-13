@@ -96,7 +96,14 @@ vercel env add SUPABASE_ANON_KEY
 
 ## Make every agent use it
 
-Connecting the MCP only makes the tools available. To have agents actually look things up at session start and save decisions as they go, install the [`shared-memory-mcp` skill](https://github.com/exbald/skills/tree/main/shared-memory-mcp): its `scripts/install.py` adds the rules, the skill, and memory hooks to Claude Code, Codex, Gemini CLI, Cursor, OpenCode, Cline, Hermes, ZCode, and Antigravity.
+Connecting the MCP only makes the tools available. To have agents actually look things up at session start and save decisions as they go, install the [skill in `skill/`](./skill). Its `scripts/install.py` adds the rules, the skill, and memory hooks to Claude Code, Codex, Gemini CLI, Cursor, OpenCode, Cline, Hermes, ZCode, and Antigravity, and writes the MCP entry for each:
+
+```bash
+export SHARED_MEMORY_URL=https://YOUR_DEPLOYMENT_URL/mcp
+export SHARED_MEMORY_API_KEY=YOUR_MCP_API_KEY
+python3 skill/scripts/install.py --dry-run   # preview
+python3 skill/scripts/install.py
+```
 
 ## Run locally
 
