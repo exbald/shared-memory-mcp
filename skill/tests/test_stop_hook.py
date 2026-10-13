@@ -22,6 +22,40 @@ def tool_use(name, **tool_input):
         {"type": "tool_use", "id": "toolu_1", "name": name, "input": tool_input}]}})
 
 
+class CliSaveDetection(unittest.TestCase):
+    """Only mem.py run as a command (directly or by python) counts; text that mentions it does not."""
+
+    def test_real_invocations(self):
+        for command in [
+            "~/.agents/skills/shared-memory-mcp/scripts/mem.py add 'Decision: y' --category decision",
+            'python3 mem.py update abc --content "x"',
+            "SHARED_MEMORY_AGENT=codex python3 -u scripts/mem.py add z",
+            "cd ~/x && /usr/bin/python3 mem.py add z",
+            "python3 mem.py add z | tail -1",
+            "ls\npython3 mem.py add 'on the second line'",
+            "( cd x; python mem.py update id --tags a )",
+            "env python3.12 mem.py add z",
+            "cat <<EOF > notes\nmem.py add inside\nEOF\npython3 mem.py add after-the-heredoc",
+        ]:
+            self.assertTrue(mem._runs_mem_save(command), command)
+
+    def test_mentions(self):
+        for command in [
+            "rg 'mem.py add' skill/",
+            "echo mem.py add",
+            "printf '%s\\n' mem.py update",
+            "grep -n mem.py add",
+            "cat >notes <<'EOF'\nmem.py add x\nEOF",
+            "cat <<-EOF\n\tpython3 mem.py add x\n\tEOF",
+            "git commit -m 'teach mem.py add'",
+            "python3 -c 'print(1)' mem.py add",
+            "vim mem.py",
+            "python3 mem.py search add",
+            "echo 'unbalanced",
+        ]:
+            self.assertFalse(mem._runs_mem_save(command), command)
+
+
 class StopHook(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

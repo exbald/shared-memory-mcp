@@ -348,15 +348,62 @@ def _commands(tool_input):
     return []
 
 
+HEREDOC_START = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+SEPARATORS = set(";&|()\n")  # runs of these end a simple command (; && || | & ( ) newline)
+WRAPPERS = {"sudo", "env", "command", "exec", "time", "nohup", "nice", "builtin"}
+ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+PYTHON = re.compile(r"python(\d+(\.\d+)?)?")
+
+
+def _drop_heredoc_bodies(command):
+    """The command without here-document bodies: text handed to a program, never run."""
+    kept, delimiter = [], None
+    for line in command.split("\n"):
+        if delimiter is not None:
+            if line.lstrip("\t") == delimiter:
+                delimiter = None
+            continue
+        kept.append(line)
+        found = HEREDOC_START.search(line)
+        delimiter = found.group(2) if found else None
+    return "\n".join(kept)
+
+
+def _simple_commands(command):
+    """The words of each simple command, split where a shell would split them."""
+    lexer = shlex.shlex(_drop_heredoc_bodies(command), posix=True, punctuation_chars="();<>|&\n")
+    lexer.whitespace = " \t\r"  # a newline separates commands
+    lexer.whitespace_split = True
+    words = []
+    for word in lexer:
+        if set(word) <= SEPARATORS:
+            if words:
+                yield words
+            words = []
+        else:
+            words.append(word)
+    if words:
+        yield words
+
+
+def _is_mem_save(words):
+    """mem.py add|update as the command itself, or as the script python runs."""
+    while words and (words[0] in WRAPPERS or ASSIGNMENT.match(words[0]) or words[0].startswith("-")):
+        words = words[1:]  # sudo/env/..., VAR=value, and their options
+    if words and PYTHON.fullmatch(os.path.basename(words[0])):
+        words = words[1:]
+        while words and words[0].startswith("-"):  # interpreter options such as -u or -I
+            words = words[1:]
+    return len(words) >= 2 and words[0].endswith("mem.py") and words[1] in ("add", "update")
+
+
 def _runs_mem_save(command):
-    """True when a shell command runs `mem.py add|update`; quoting it (`rg 'mem.py add'`) is not."""
+    """True when a shell command runs `mem.py add|update`. A mention is not a save: quoted text,
+    an argument of another program (echo, grep), or the body of a here-document."""
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        words = list(lexer)
+        return any(_is_mem_save(words) for words in _simple_commands(command))
     except ValueError:  # unbalanced quotes
         return False
-    return any(w.endswith("mem.py") and nxt in ("add", "update") for w, nxt in zip(words, words[1:]))
 
 
 def tool_calls(transcript_path):
