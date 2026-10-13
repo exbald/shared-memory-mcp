@@ -11,7 +11,7 @@ test("loadConfig: DATABASE_URL is required, everything else has a default", () =
   assert.equal(c.port, 3000);
   assert.equal(c.poolMax, 5);
   assert.equal(c.apiKey, base.MCP_API_KEY);
-  assert.deepEqual(c.tools, { minSimilarity: 0.3, dedupSimilarity: 0.82, queryTimeoutMs: 2000, writeTimeoutMs: 4000 });
+  assert.deepEqual(c.tools, { minSimilarity: 0.35, dedupSimilarity: 0.85, queryTimeoutMs: 2000, writeTimeoutMs: 4000 });
 });
 
 test("loadConfig: no API key stops the boot, unless running open is asked for explicitly", () => {

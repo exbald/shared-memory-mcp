@@ -64,8 +64,8 @@ On Coolify: create a PostgreSQL database with the image `pgvector/pgvector:pg18`
 | `MCP_API_KEY` | Shared secret for `/mcp`, sent as `X-API-Key:`, `Authorization: Bearer ...` or `?key=...`. Make one with `openssl rand -hex 32`. | Yes |
 | `MCP_ALLOW_NO_AUTH` | `1` lets the server start without `MCP_API_KEY`, open to anyone who can reach it. | No |
 | `EMBEDDING_API_KEY` | OpenAI key, or OpenRouter key (`sk-or-...`). Without it search uses keywords only. | No |
-| `SEARCH_MIN_SIMILARITY` | Cosine floor for the meaning half of search. Default `0.30`. | No |
-| `DEDUP_SIMILARITY` | `mem_add` lists existing memories at least this similar. Default `0.82`. | No |
+| `SEARCH_MIN_SIMILARITY` | Cosine floor for the meaning half of search. Default `0.35` (calibrated on real memories: off-topic queries peaked at 0.31). | No |
+| `DEDUP_SIMILARITY` | `mem_add` lists existing memories at least this similar. Default `0.85`. | No |
 | `PG_POOL_MAX` | Database connections. Default `5`. | No |
 | `PORT` | Default `3000`. | No |
 

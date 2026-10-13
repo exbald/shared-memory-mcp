@@ -51,7 +51,7 @@ export function formatAdded(row: MemoryRow, opts: { embedded: boolean | null; si
   }
   if (opts.similar.length) {
     lines.push(
-      "Similar memories already saved (update or merge instead of keeping a duplicate):",
+      "Similar memories already saved (if one covers the same fact, update or merge it instead of keeping both):",
       ...opts.similar.map((s) => memoryLine(s, { similarity: s.similarity, maxChars: HINT_CHARS })),
     );
   }

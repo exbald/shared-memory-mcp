@@ -80,7 +80,7 @@ test("formatAdded: the saved memory, then optional duplicate hints", () => {
   const late = formatAdded(row({ tags: [] }), { embedded: false, similar: [] });
   assert.match(late, /tags: none\n\[not embedded yet: retried automatically; keyword search already finds it\]$/);
   const hinted = formatAdded(row(), { embedded: true, similar: [{ ...row({ id: OTHER }), similarity: 0.93 }] });
-  assert.match(hinted, /\nSimilar memories already saved \(update or merge instead of keeping a duplicate\):\n/);
+  assert.match(hinted, /\nSimilar memories already saved \(if one covers the same fact, update or merge it instead of keeping both\):\n/);
   assert.ok(hinted.endsWith(memoryLine(row({ id: OTHER }), { similarity: 0.93, maxChars: 160 })));
   assert.equal(formatAdded(row(), { embedded: null, similar: [] }), `Saved [decision] (id: ${ID})\nChose Postgres\ntags: db`,
     "no embedding line when the server has no embedding key: nothing will be retried");
