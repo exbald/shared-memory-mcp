@@ -6,6 +6,7 @@ import { sliceSafe } from "./text.ts";
 export const DIMS = 1536;
 const MAX_INPUT_CHARS = 8000; // stays under the model's 8,191-token limit for most text
 const RETRY_INPUT_CHARS = 2000; // a second try for text that still turned out too long
+const BREAKER_AFTER = 3;
 
 export interface Embedder {
   readonly enabled: boolean;
@@ -18,7 +19,10 @@ export interface EmbedderOptions {
   fetchImpl?: typeof fetch;
   /** Entries in the query cache (least recently used goes first). */
   cacheSize?: number;
-  /** After a failure other than HTTP 400, skip calls for this long, so a dead provider costs one timeout. */
+  /**
+   * After BREAKER_AFTER failures in a row (anything but HTTP 400), skip calls for this long, so a
+   * dead provider costs a few timeouts, not one per search. A single slow call never trips it.
+   */
   breakerMs?: number;
   now?: () => number;
 }
@@ -100,6 +104,7 @@ export function createEmbedder(opts: EmbedderOptions = {}): Embedder {
   const breakerMs = opts.breakerMs ?? 30_000;
   const provider = providerFor(apiKey);
   const cache = lruCache(opts.cacheSize ?? 256);
+  let failures = 0; // in a row; after a cool-down, one more failure re-opens the breaker at once
   let openUntil = 0;
 
   // One deadline covers the retry too, so a 400 never doubles the caller's wait.
@@ -120,10 +125,11 @@ export function createEmbedder(opts: EmbedderOptions = {}): Embedder {
       if (now() < openUntil) return null;
       const result = await fetchVector(input, timeoutMs);
       if (result.vector) {
+        failures = 0;
         if (useCache) cache.set(input, result.vector);
         return result.vector;
       }
-      if (result.status !== 400) openUntil = now() + breakerMs; // timeout, network, 5xx, 401, 429
+      if (result.status !== 400 && ++failures >= BREAKER_AFTER) openUntil = now() + breakerMs; // timeout, network, 5xx, 401, 429
       return null;
     },
   };

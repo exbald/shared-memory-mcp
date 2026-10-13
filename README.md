@@ -26,7 +26,7 @@ One SQL statement builds three ranked lists over all memories and merges them wi
 2. **Exact text:** a case-insensitive substring match, for code identifiers, paths, version strings and Chinese or Japanese text that full-text search does not split into words.
 3. **Meaning:** cosine similarity between the query's embedding and each memory's (`text-embedding-3-small`, 1536 dimensions). Only matches above `SEARCH_MIN_SIMILARITY` count, so an unrelated query returns nothing instead of the closest junk.
 
-If the embedding service is slow (over 1.5 s) or down, search answers from keywords alone and says so in its first line. A memory saved while embeddings were down is still found by keyword, and the server fills in its vector later (on boot and every hour).
+If the embedding service is slow (over 2 s) or down, search answers from keywords alone and says so in its first line. After three failures in a row the server stops asking it for 30 seconds, so an outage costs a few slow searches, not every one. A memory saved while embeddings were down is still found by keyword, and the server fills in its vector later (on boot and every hour).
 
 Vector search is exact, with no approximate index: it compares the query with every stored vector, which takes a few milliseconds for thousands of memories.
 

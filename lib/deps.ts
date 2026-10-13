@@ -38,7 +38,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tools: {
       minSimilarity: number(env, "SEARCH_MIN_SIMILARITY", 0.3, 0, 1),
       dedupSimilarity: number(env, "DEDUP_SIMILARITY", 0.82, 0, 1),
-      queryTimeoutMs: 1500,
+      queryTimeoutMs: 2000, // measured from the VPS: ~0.9 s for a cold connection, 0.2-0.5 s warm
       // With the 3 s statement timeout, a save finishes or fails within skill/scripts/mem.py's
       // 8 s, so a slow save is never retried into a duplicate.
       writeTimeoutMs: 4000,

@@ -66,18 +66,40 @@ for (const [name, response] of [
   });
 }
 
-test("a timeout gives up quickly, then the breaker skips calls until it cools down", async () => {
+test("a timeout gives up quickly; three failures in a row open the breaker until it cools down", async () => {
   let now = 1_000_000;
   const { fn, calls } = fakeFetch(hang);
   const e = createEmbedder({ apiKey: "k", fetchImpl: fn, breakerMs: 30_000, now: () => now });
   const t0 = Date.now();
   assert.equal(await e.embed("x", { timeoutMs: 100 }), null);
   assert.ok(Date.now() - t0 < 1000, "should not wait much longer than the timeout");
-  assert.equal(await e.embed("y", { timeoutMs: 100 }), null);
-  assert.equal(calls.length, 1, "breaker open: no second request");
-  now += 30_001;
+  await e.embed("y", { timeoutMs: 100 });
+  assert.equal(calls.length, 2, "one or two slow calls do not switch meaning search off");
   await e.embed("z", { timeoutMs: 100 });
-  assert.equal(calls.length, 2, "breaker closed again after the cool-down");
+  await e.embed("w", { timeoutMs: 100 });
+  assert.equal(calls.length, 3, "breaker open after the third failure: no fourth request");
+  now += 30_001;
+  await e.embed("v", { timeoutMs: 100 });
+  assert.equal(calls.length, 4, "after the cool-down one request goes out");
+  await e.embed("u", { timeoutMs: 100 });
+  assert.equal(calls.length, 4, "and its failure opens the breaker again at once");
+});
+
+test("a success resets the failure count", async () => {
+  let fail = true;
+  const { fn, calls } = fakeFetch((call, init) => (fail ? json(503, {}) : ok()));
+  const e = createEmbedder({ apiKey: "k", fetchImpl: fn });
+  await e.embed("a", { timeoutMs: 1000 });
+  await e.embed("b", { timeoutMs: 1000 });
+  fail = false;
+  assert.ok(await e.embed("c", { timeoutMs: 1000 }));
+  fail = true;
+  await e.embed("d", { timeoutMs: 1000 });
+  await e.embed("e", { timeoutMs: 1000 });
+  await e.embed("f", { timeoutMs: 1000 });
+  assert.equal(calls.length, 6, "two failures, a success, then three more before the breaker opens");
+  await e.embed("g", { timeoutMs: 1000 });
+  assert.equal(calls.length, 6);
 });
 
 test("HTTP 400 retries once with a much shorter input", async () => {
