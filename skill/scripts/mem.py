@@ -131,7 +131,8 @@ def _connection(parts):
     if _conn["origin"] != origin:
         _discard()
         # An explicit port: http.client would read the last group of a bare IPv6 address as one.
-        port = parts.port or (443 if parts.scheme == "https" else 80)
+        # A port written in the URL is kept as written, even 0.
+        port = parts.port if parts.port is not None else (443 if parts.scheme == "https" else 80)
         cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
         _conn.update(origin=origin, conn=cls(parts.hostname, port, timeout=TIMEOUT))
     return _conn["conn"]

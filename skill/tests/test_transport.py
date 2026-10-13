@@ -170,7 +170,8 @@ class Transport(unittest.TestCase):
 class Connections(unittest.TestCase):
     def test_default_ports_are_explicit_so_ipv6_literals_work(self):
         for url, host, port in (("http://[::1]/mcp", "::1", 80), ("https://example.com/mcp", "example.com", 443),
-                                ("https://example.com:8443/mcp", "example.com", 8443)):
+                                ("https://example.com:8443/mcp", "example.com", 8443),
+                                ("http://example.com:0/mcp", "example.com", 0)):  # explicit, so not port 80
             conn = mem._connection(urllib.parse.urlsplit(url))
             self.assertEqual((conn.host, conn.port), (host, port), url)
 
