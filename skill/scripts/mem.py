@@ -112,8 +112,10 @@ atexit.register(_discard)
 
 
 def _uses_proxy(parts):
-    """http.client ignores proxy settings, so a configured proxy means urllib does the request."""
-    return bool(urllib.request.getproxies().get(parts.scheme)) and not urllib.request.proxy_bypass(parts.hostname)
+    """http.client ignores proxy settings, so a configured proxy means urllib does the request.
+    The bypass check gets host[:port], as urllib's own does, so NO_PROXY entries with a port match."""
+    host = parts.netloc.rpartition("@")[2]
+    return bool(urllib.request.getproxies().get(parts.scheme)) and not urllib.request.proxy_bypass(host)
 
 
 def _connection(parts):

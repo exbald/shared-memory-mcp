@@ -135,6 +135,14 @@ class Transport(unittest.TestCase):
         # A half-built request left in the connection would come first and swallow the real headers.
         self.assertEqual(self.server.requests[1][0].get("X-API-Key"), "test-key")
 
+    def test_no_proxy_entries_with_a_port_match_as_in_urllib(self):
+        host_port = self.server.url.split("/")[2]  # 127.0.0.1:<port>
+        with mock.patch.dict(os.environ, {"http_proxy": "http://proxy.invalid:3128", "no_proxy": host_port}):
+            mem.call("mem_stats", {})
+            mem.call("mem_stats", {})
+        self.assertEqual(len(self.server.requests), 2)
+        self.assertEqual(self.server.connections, 1, "direct, on the kept-alive connection")
+
     def test_with_a_proxy_configured_urllib_does_the_request(self):
         frame = 'event: message\ndata: {"jsonrpc": "2.0", "id": 1, "result": {"content": [{"type": "text", "text": "via proxy"}]}}\n\n'
         with mock.patch.object(mem.urllib.request, "getproxies", return_value={"http": "http://proxy.invalid:3128"}), \
